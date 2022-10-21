@@ -2,13 +2,14 @@
 Merging PINN and INVNN
 """
 
-import torch # arrays on GPU
-import torch.autograd as autograd #build a computational graph
-import torch.nn as nn ## neural net library
-import torch.nn.functional as F ## most non-linearities are here
-import torch.optim as optim
+import torch  # arrays on GPU
+# import torch.autograd as autograd #build a computational graph
+# import torch.nn as nn ## neural net library
+# import torch.nn.functional as F ## most non-linearities are here
+# import torch.optim as optim
 import scipy
-
+import numpy as np
+from collections import OrderedDict
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -18,7 +19,7 @@ class DNN(torch.nn.Module):
         super(DNN, self).__init__()
 
         layer_list = list()
-        layer_dict = dict()
+        layer_dict = OrderedDict()
         for i in range(len(layers) - 2):
             lname = f"layer_{i:d}"
             layer_dict[lname] = torch.nn.Linear(layers[i], layers[i + 1])
@@ -32,9 +33,9 @@ class DNN(torch.nn.Module):
         # deploy layers
         self.layers = torch.nn.Sequential(layer_dict)
 
-        def forward(self, x):
-            out = self.layers(x)
-            return out
+    def forward(self, x):
+        out = self.layers(x)
+        return out
 
 
 # the physics-guided neural network
@@ -51,11 +52,8 @@ class PhysicsInformedNN():
         self.u = torch.tensor(u).float().to(device)
 
         # settings
-        self.lambda_1 = torch.tensor([0.0], requires_grad=True).to(device)
-        self.lambda_2 = torch.tensor([-6.0], requires_grad=True).to(device)
-
-        self.lambda_1 = torch.nn.Parameter(self.lambda_1)
-        self.lambda_2 = torch.nn.Parameter(self.lambda_2)
+        self.lambda_1 = torch.nn.Parameter(torch.tensor([0.0], requires_grad=True).to(device))
+        self.lambda_2 = torch.nn.Parameter(torch.tensor([-6.0], requires_grad=True).to(device))
 
         # deep neural networks
         self.dnn = DNN(layers).to(device)
@@ -110,6 +108,7 @@ class PhysicsInformedNN():
         return f
 
     def loss_func(self):
+        """For local optimization using BFGS"""
         u_pred = self.net_u(self.x, self.t)
         f_pred = self.net_f(self.x, self.t)
         loss = torch.mean((self.u - u_pred) ** 2) + torch.mean(f_pred ** 2)
@@ -119,7 +118,7 @@ class PhysicsInformedNN():
         self.iter += 1
         if self.iter % 100 == 0:
             print(
-                'Loss: %e, l1: %.5f, l2: %.5f' %
+                'A: Loss: %e, l1: %.5f, l2: %.5f' %
                 (
                     loss.item(),
                     self.lambda_1.item(),
@@ -142,7 +141,7 @@ class PhysicsInformedNN():
 
             if epoch % 100 == 0:
                 print(
-                    'It: %d, Loss: %.3e, Lambda_1: %.3f, Lambda_2: %.6f' %
+                    'B: It: %d, Loss: %.3e, Lambda_1: %.3f, Lambda_2: %.6f' %
                     (
                         epoch,
                         loss.item(),
@@ -150,9 +149,11 @@ class PhysicsInformedNN():
                         torch.exp(self.lambda_2).item()
                     )
                 )
-
+        print('Epoch ended')
+        # not sure why the following line is needed
         # Backward and optimize
         self.optimizer.step(self.loss_func)
+        print('Loss func called')
 
     def predict(self, X):
         x = torch.tensor(X[:, 0:1], requires_grad=True).float().to(device)
@@ -172,18 +173,26 @@ layers = [2, 20, 20, 20, 20, 20, 20, 20, 20, 1]
 
 data = scipy.io.loadmat('data/burgers_shock.mat')
 
-t = data['t'].flatten()[:,None]
-x = data['x'].flatten()[:,None]
+t = data['t'].flatten()[:, None]
+x = data['x'].flatten()[:, None]
 Exact = np.real(data['usol']).T
 
-X, T = np.meshgrid(x,t)
+X, T = np.meshgrid(x, t)
 
-X_star = np.hstack((X.flatten()[:,None], T.flatten()[:,None]))
-u_star = Exact.flatten()[:,None]
+X_star = np.hstack((X.flatten()[:, None], T.flatten()[:, None]))
+u_star = Exact.flatten()[:, None]
 
-# Doman bounds
+# Domain bounds
 lb = X_star.min(0)
 ub = X_star.max(0)
 
+noise = 0.0
 
+# create training set
+idx = np.random.choice(X_star.shape[0], N_u, replace=False)
+X_u_train = X_star[idx,:]
+u_train = u_star[idx,:]
 
+# training
+model = PhysicsInformedNN(X_u_train, u_train, layers, lb, ub)
+model.train(10000)
