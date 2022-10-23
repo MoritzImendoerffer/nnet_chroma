@@ -1,15 +1,16 @@
 """
 Merging PINN and INVNN
+
+Implementing the INVNN
 """
 
 import torch  # arrays on GPU
-# import torch.autograd as autograd #build a computational graph
-# import torch.nn as nn ## neural net library
-# import torch.nn.functional as F ## most non-linearities are here
-# import torch.optim as optim
+import FrEIA.framework as Ff
+import FrEIA.modules as Fm
 import scipy
 import numpy as np
 from collections import OrderedDict
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -38,6 +39,13 @@ class DNN(torch.nn.Module):
         return out
 
 
+def subnet_fc(dims_in, dims_out):
+    """Return a feed-forward subnetwork, to be used in the coupling blocks below"""
+    return torch.nn.Sequential(torch.nn.Linear(dims_in, 128), torch.nn.Tanh(),
+                               torch.nn.Linear(128, 128), torch.nn.Tanh(),
+                               torch.nn.Linear(128, dims_out))
+
+
 # the physics-guided neural network
 class PhysicsInformedNN():
     def __init__(self, X, u, layers, lb, ub):
@@ -55,8 +63,17 @@ class PhysicsInformedNN():
         self.lambda_1 = torch.nn.Parameter(torch.tensor([0.0], requires_grad=True).to(device))
         self.lambda_2 = torch.nn.Parameter(torch.tensor([-6.0], requires_grad=True).to(device))
 
-        # deep neural networks
-        self.dnn = DNN(layers).to(device)
+        # construct the INN (not containing any operations so far)
+        input_dims = (2,)
+        inn = Ff.SequenceINN(*input_dims)
+
+        # append coupling blocks to the sequence of operations
+        for k in range(8):
+            inn.append(Fm.AllInOneBlock, subnet_constructor=subnet_fc)
+
+        #self.dnn = inn.to(device)
+        self.dnn = inn
+
         self.dnn.register_parameter('lambda_1', self.lambda_1)
         self.dnn.register_parameter('lambda_2', self.lambda_2)
 
@@ -76,7 +93,7 @@ class PhysicsInformedNN():
         self.iter = 0
 
     def net_u(self, x, t):
-        u = self.dnn(torch.cat([x, t], dim=1))
+        x_, u = self.dnn(torch.cat([x, t], dim=1))
         return u
 
     def net_f(self, x, t):
@@ -166,10 +183,12 @@ class PhysicsInformedNN():
         f = f.detach().cpu().numpy()
         return u, f
 
-nu = 0.01/np.pi
+
+nu = 0.01 / np.pi
 
 N_u = 2000
 layers = [2, 128, 128, 128, 1]
+dims = (2, 1)
 
 data = scipy.io.loadmat('data/burgers_shock.mat')
 
@@ -186,14 +205,14 @@ u_star = Exact.flatten()[:, None]
 lb = X_star.min(0)
 ub = X_star.max(0)
 
-noise = 0
+noise = 0.0
 
 # create training set
 idx = np.random.choice(X_star.shape[0], N_u, replace=False)
-X_u_train = X_star[idx,:]
-u_train = u_star[idx,:]
+X_u_train = X_star[idx, :]
+u_train = u_star[idx, :]
 
 # training
 model = PhysicsInformedNN(X_u_train, u_train, layers, lb, ub)
-model.train(10000)
+model.train(1000)
 model.predict(X_u_train)
