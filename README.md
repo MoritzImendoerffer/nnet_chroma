@@ -33,3 +33,5 @@ The training process minimizes the sum of the mean squared errors of the network
 ## Current State
 
 Experimenting with implementing in invertible form of the PINNS. It seems, that the solution is not stable and oszillates.
+
+TODO: Test oscillating LR scheduler, and more iterations
