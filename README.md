@@ -3,13 +3,6 @@
 This project implements an invertible physics informed neural network using the Burgers equation as a toy example. The implementation is converted from Tensorflow (https://github.com/maziarraissi/PINNs) to PyTorch. The purpose of this project is to provide a starting point for implementing invertible neural networks in physical systems.
 
 
-## Requirements
-
-* Python 3.6 or later
-* PyTorch 1.8 or later
-* Matplotlib
-* NumPy
-* SciPy
 
 ## Implementation Overview
 
@@ -31,12 +24,12 @@ The training process minimizes the sum of the mean squared errors of the network
 ## Usage
 
 1. Load the data (Burgers equation) from the provided `.mat` file. Source: https://github.com/maziarraissi/PINNs
-2. Define the parameters for the problem, such as the number of training samples, network layers, and domain bounds.
+2. Define the parameters for the problem: number of training samples, network layers, and domain bounds.
 3. Create an instance of the `PhysicsInformedNN` class with the training data, network architecture, and domain bounds.
 4. Train the model using the `train` method.
 5. Use the `predict` method to obtain predictions for new input data.
 6. Visualize the results using Matplotlib.
 
-## Future Work
+## Current State
 
-To extend this project to other physical systems, replace the Burgers equation with the desired governing equation and modify the `net_f` method accordingly. To implement an invertible neural network, use the FrEiA package to create an invertible network architecture and modify the `DNN` class to use this new architecture.
+Experimenting with implementing in invertible form of the PINNS. It seems, that the solution is not stable and oszillates.
