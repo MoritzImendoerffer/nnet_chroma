@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "env": {"DISPLAY":":1",
+                    "PYTHONPATH": "${workspaceRoot}",
+                    "PYDEVD_WARN_EVALUATION_TIMEOUT": "5000",
+                    "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "20"},
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        }
+    ]
+}

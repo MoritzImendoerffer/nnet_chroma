@@ -5,7 +5,7 @@ Implementing the INVNN using FrEIA
 
 y[:, 0] for estimation of u
 y[:, 1] for estimation of f
-seems to work better
+seems to work better -> Nope Overfitting seems to occur
 """
 
 import torch
@@ -19,34 +19,6 @@ from matplotlib import pyplot as plt
 
 #torch.manual_seed(0)
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
-
-# the deep neural network
-class DNN(torch.nn.Module):
-    def __init__(self, layers):
-        super(DNN, self).__init__()
-
-        layer_list = list()
-        layer_dict = OrderedDict()
-        for i in range(len(layers) - 2):
-            lname = f"layer_{i:d}"
-            layer_dict[lname] = torch.nn.Linear(layers[i], layers[i + 1])
-
-            aname = f"activation_{i:d}"
-            layer_dict[aname] = torch.nn.Tanh()
-
-        lname = f"layer_{len(layers) - 2: d}"
-        layer_dict[lname] = torch.nn.Linear(layers[-2], layers[-1])
-
-        # deploy layers
-        self.layers = torch.nn.Sequential(layer_dict)
-
-    def forward(self, x):
-        out = self.layers(x)
-        return out
-
-
-
 
 # the physics-guided neural network
 class PhysicsInformedNN():
@@ -75,19 +47,31 @@ class PhysicsInformedNN():
 
         # append coupling blocks to the sequence of operations
         for k in range(n_node):
-            #inn.append(Fm.AllInOneBlock, subnet_constructor=self.subnet_fc)
+            inn.append(Fm.AllInOneBlock, subnet_constructor=self.subnet_fc,
+                       affine_clamping=3.0,
+                       gin_block=True,
+                       global_affine_init=1.0,
+                       global_affine_type='SOFTPLUS',
+                       permute_soft=True,
+                       learned_householder_permutation=0,
+                       reverse_permutation=False)
             # slower but better at version 0.4
-            inn.append(Fm.RNVPCouplingBlock, subnet_constructor=self.subnet_fc)
+            # clamp 3 scheint besser zu funktionieren
+            # inn.append(Fm.RNVPCouplingBlock, subnet_constructor=self.subnet_fc, clamp=3)
+            # inn.append(Fm.RNVPCouplingBlock, subnet_constructor=self.subnet_fc, clamp=2)
 
 
         self.dnn = inn.to(device)
 
         self.dnn.register_parameter('lambda_1', self.lambda_1)
         self.dnn.register_parameter('lambda_2', self.lambda_2)
+        lr = 1e-3
+        l2_reg = 2e-5
+        trainable_parameters = [p for p in self.dnn.parameters() if p.requires_grad]
 
         # optimizers: using the same settings
         self.optimizer = torch.optim.LBFGS(
-            self.dnn.parameters(),
+            trainable_parameters,
             lr=1,
             max_iter=50000,
             max_eval=50000,
@@ -96,22 +80,16 @@ class PhysicsInformedNN():
             tolerance_change=1.0 * np.finfo(float).eps,
             line_search_fn="strong_wolfe"  # can be "strong_wolfe"
         )
+        # self.optimizer = torch.optim.SGD(
+        #     self.dnn.parameters(),
+        #     lr=0.05,
+        #     momentum=0.9
+        # )
         # gamma = decaying factor
         #self.scheduler = ReduceLROnPlateau(self.optimizer, mode='max', factor=0.1, patience=0, verbose=True)
 
-        self.optimizer_1 = torch.optim.LBFGS(
-            self.dnn.parameters(),
-            lr=1,
-            max_iter=50000,
-            max_eval=50000,
-            history_size=50,
-            tolerance_grad=1e-5,
-            tolerance_change=1.0 * np.finfo(float).eps,
-            line_search_fn="strong_wolfe"  # can be "strong_wolfe"
-        )
-
-        self.optimizer_Adam = torch.optim.Adam(self.dnn.parameters(), lr=0.001)
-        self.optimizer_Adam_1 = torch.optim.Adam(self.dnn.parameters(), lr=0.001)
+        self.optimizer_Adam = torch.optim.Adam(trainable_parameters, lr=lr, weight_decay=l2_reg)
+        # self.optimizer_Adam_1 = torch.optim.Adam(self.dnn.parameters(), lr=0.001)
 
         #self.optimizer_Adam = torch.optim.SGD(self.dnn.parameters(), lr=0.05, momentum=0.9)
         #self.optimizer_Adam_1 = torch.optim.SGD(self.dnn.parameters(), lr=0.05, momentum=0.9)
@@ -134,12 +112,11 @@ class PhysicsInformedNN():
         """ The pytorch autograd version of calculating residual """
         lambda_1 = self.lambda_1
         lambda_2 = torch.exp(self.lambda_2)
-        uhats = self.net_u(x, t).T
+        uhats = self.net_u(x, t)
         # This is a source for error because the indices are hardcoded in two different functions
         # y values
-        # TODO find better way to define the indices
-        # I accidentially made the approach better
         u = uhats[:, 1]
+        u = u[:, None]
 
         u_t = torch.autograd.grad(
             u, t,
@@ -163,6 +140,10 @@ class PhysicsInformedNN():
         f = u_t + lambda_1 * u * u_x - lambda_2 * u_xx
         return f
 
+    def net_u_inverse(self, y):
+        x, log_jac_det_inv = self.dnn(y, rev=True)
+        return x
+
     def mse_loss_u(self):
         # training so that the output 2 is equal the time
         uhats = self.net_u(self.x, self.t)
@@ -174,10 +155,31 @@ class PhysicsInformedNN():
         loss = torch.mean((self.u - u_pred) ** 2)
         return loss
 
+    def inverse_loss(self):
+        # training so that the output 2 is equal the time
+        uhats = self.net_u(self.x, self.t)
+
+        xhat = self.net_u_inverse(uhats)
+
+        # y values
+        loss = torch.mean((self.x - xhat[:, 0]) ** 2) + torch.mean((torch.zeros_like(self.x) - xhat[:, 1]) ** 2)
+        return loss
+
     def mse_loss_f(self):
         # training so that the output 2 is equal the time
         f_pred = self.net_f(self.x, self.t)
+
         loss = torch.mean(f_pred ** 2)
+        return loss
+
+    def mse_residual(self):
+        uhats = self.net_u(self.x, self.t)
+
+        # y values
+        u_pred = uhats[:, 1]
+        u_pred = u_pred[:, None]
+
+        loss = torch.mean((self.u - u_pred) ** 2)
         return loss
 
     def loss_func(self):
@@ -185,9 +187,15 @@ class PhysicsInformedNN():
 
         loss_u = self.mse_loss_u()
         loss_f = self.mse_loss_f()
+
+        loss_inv = self.inverse_loss()
+
+        loss = loss_u + loss_f + loss_inv
+        # loss = loss_u + loss_f + loss_r
         self.optimizer.zero_grad()
-        loss_u.backward(retain_graph=True)
-        loss_f.backward(retain_graph=True)
+        # loss_u.backward(retain_graph=True)
+        # loss_f.backward(retain_graph=True)
+        loss.backward(retain_graph=True)
 
         self.iter += 1
         if self.iter % 100 == 0:
@@ -209,14 +217,19 @@ class PhysicsInformedNN():
             loss_u = self.mse_loss_u()
             loss_f = self.mse_loss_f()
 
+            loss_inv = self.inverse_loss()
+
+            loss = loss_u + loss_f + loss_inv
+
+            # loss = loss_u + loss_f + loss_r
             # Backward and optimize
             self.optimizer_Adam.zero_grad()
-            self.optimizer_Adam_1.zero_grad()
-            loss_u.backward(retain_graph=True)
-
-            loss_f.backward(retain_graph=True)
+            #self.optimizer_Adam_1.zero_grad()
+            # loss_u.backward(retain_graph=True)
+            # loss_f.backward(retain_graph=True)
+            loss.backward(retain_graph=True)
             self.optimizer_Adam.step()
-            self.optimizer_Adam_1.step()
+            #self.optimizer_Adam_1.step()
 
             if epoch % 100 == 0:
                 print(
@@ -245,14 +258,9 @@ class PhysicsInformedNN():
         f = f.detach().cpu().numpy()
         return u, f
 
-
 nu = 0.01 / np.pi
-
 N_u = 2000
-
-
 data = scipy.io.loadmat('data/burgers_shock.mat')
-
 t = data['t'].flatten()[:, None]
 # sd = 1e-5
 # noise = scipy.stats.norm.rvs(loc=0, scale=sd, size=len(t))[:, None]
@@ -262,54 +270,34 @@ t = data['t'].flatten()[:, None]
 
 x = data['x'].flatten()[:, None]
 Exact = np.real(data['usol']).T
-
 X, T = np.meshgrid(x, t)
-
-
 X_star = np.hstack((X.flatten()[:, None], T.flatten()[:, None]
                     ))
 u_star = Exact.flatten()[:, None]
-
 # Domain bounds
 lb = X_star.min(0)
 ub = X_star.max(0)
-
-
 
 # create training set
 idx = np.random.choice(X_star.shape[0], N_u, replace=False)
 X_u_train = X_star[idx, :]
 u_train = u_star[idx, :]
 
-# bisher nsub = 20, n_node = 4 oder 5 als Gewinner, 60/4 war auch im Bereich von 1e-5, auch (6, 5), (6, 6) und (6, 10)
-n_sub = [3, 4, 5, 6]
-n_node = [3, 4, 5, 6, 10]
+c = (4, 11)
+c = (5, 6)
+#c = (512, 5)
+model = PhysicsInformedNN(X_u_train, u_train, lb, ub, n_sub=c[0], n_node=c[1])
+model.train(1000)
 
-combs = []
-for ns in n_sub:
-    for no in n_node:
-        combs.append((ns, no))
-
-#np.random.shuffle(combs)
-
-# training
-models = []
-for c in combs:
-    print(20*'=')
-    print(c)
-    print(20 * '=')
-    model = PhysicsInformedNN(X_u_train, u_train, lb, ub, n_sub=c[0], n_node=c[1])
-    model.train(1000)
-    models.append(model)
 # Run 1: Winner: (4, 10), Run2: Winner: Winner: (5, 6)
 
-print('Done')
-losses = [m.optimizer.state_dict()['state'][0]['prev_loss'] for m in models]
-min_idx = np.argmin(losses)
+ypred, fpred = model.predict(X_star)
 
-print(f'Winner: {combs[min_idx]}')
-best_model = models[min_idx]
-ypred, fpred = best_model.predict(X_u_train)
+plt.plot(u_star, ypred[:, 0], 'o', linestyle='', color='orange')
+plt.title('True y vs ypred0')
+plt.show()
+
+ypred, fpred = model.predict(X_u_train)
 
 plt.plot(u_train, ypred[:, 0], 'o', linestyle='', color='orange')
 plt.title('True y vs ypred0')
