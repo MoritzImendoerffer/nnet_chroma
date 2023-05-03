@@ -3,7 +3,7 @@ import scipy
 from matplotlib import pyplot as plt
 import scipy
 from torch.utils.data import DataLoader, TensorDataset
-from pinns.pinns_burger_v03 import PhysicsInformedNN
+from pinns_burger.pinns_burger_v03 import PhysicsInformedNN
 import torch
 
 # Set problem parameters

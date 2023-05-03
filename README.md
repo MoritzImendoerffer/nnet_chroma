@@ -2,7 +2,11 @@
 
 This project implements an invertible physics informed neural network using the Burgers equation as a toy example. The implementation is converted from Tensorflow (https://github.com/maziarraissi/PINNs) to PyTorch. The purpose of this project is to provide a starting point for implementing invertible neural networks in physical systems.
 
-The Repo does contain a 
+The Repo does contain three folders:
+
+pinns_burger ... simple test case for the Burger`s equation
+invertible_pinns ... attempt to make pinns_burger invertible for potentially rapit parameter estimation.
+pinns_grm ... implementation of the general rate model for protein chromatography as PINN
 
 ## Implementation Overview
 
