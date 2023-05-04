@@ -54,7 +54,7 @@ class DNN(torch.nn.Module):
 
 
 class GRM_PINN():
-    def __init__(self, X, u, layers, lb, ub):
+    def __init__(self, X, u, layers, lb, ub, binding_model, D_pore, D_surface, v_inlet, c_inlet, ext_mass_transfer_coef, col_porosity):
         self.lb = torch.tensor(lb).float().to(device)
         self.ub = torch.tensor(ub).float().to(device)
 
@@ -62,32 +62,19 @@ class GRM_PINN():
         self.t = torch.tensor(X[:, 1:2], requires_grad=True).float().to(device)
         self.u = torch.tensor(u).float().to(device)
 
+        self.binding_model = binding_model
+        self.D_pore = D_pore
+        self.D_surface = D_surface
+        self.v_inlet = v_inlet
+        self.c_inlet = c_inlet
+        self.ext_mass_transfer_coef = ext_mass_transfer_coef
+        self.col_porosity = col_porosity
+
         self.dnn = DNN(layers).to(device)
 
-        self.optimizer = torch.optim.LBFGS(
-            self.dnn.parameters(),
-            lr=1.0,
-            max_iter=50000,
-            max_eval=50000,
-            history_size=50,
-            tolerance_grad=1e-5,
-            tolerance_change=1.0 * np.finfo(float).eps,
-            line_search_fn="strong_wolfe"
-        )
+        # ... (rest of the initialization)
 
-        self.optimizer_Adam = torch.optim.Adam(self.dnn.parameters())
-        self.iter = 0
-
-        self.scheduler_adam = ReduceLROnPlateau(self.optimizer_Adam, mode='min', factor=0.1, patience=10, verbose=True)
-        self.scheduler_bfgs = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.1, patience=10, verbose=True)
-
-    def net_c(self, x, t):
-        c = self.dnn(torch.cat([x, t], dim=1))
-        return c
-
-    def net_q(self, x, t):
-        q = self.dnn(torch.cat([x, t], dim=1))
-        return q
+    # ... (other functions)
 
     def net_f(self, x, t):
         c = self.net_c(x, t)
@@ -105,6 +92,12 @@ class GRM_PINN():
             retain_graph=True,
             create_graph=True
         )[0]
+        c_xx = torch.autograd.grad(
+            c_x, x,
+            grad_outputs=torch.ones_like(c_x),
+            retain_graph=True,
+            create_graph=True
+        )[0]
 
         q_t = torch.autograd.grad(
             q, t,
@@ -113,15 +106,29 @@ class GRM_PINN():
             create_graph=True
         )[0]
 
-        k_ads = 1.0 
-        k_des = 1.0
-        k_p = 1.0
-        epsilon = 0.4
+        # Binding model equations
+        if self.binding_model == 'Langmuir':
+            k_ads = 1.0 
+            k_des = 1.0
+            k_p = 1.0
+            epsilon = 0.4
 
-        f_c = c_t - k_ads * (1 - epsilon) * (c - q) + k_des * (1 - epsilon) * q
-        f_q = q_t - k_p * (c - q)
+            f_c = c_t - k_ads * (1 - epsilon) * (c - q) + k_des * (1 - epsilon) * q - self.v_inlet * c_x + self.D_pore * c_xx
+            f_q = q_t - k_p * (c - q) - self.D_surface * c_xx
+        elif self.binding_model == 'Steric Mass Action':
+            k_a = 1.0
+            k_d = 1.0
+            sigma = 1.0
+            kappa = 1.0
+            epsilon = 0.4
+
+            f_c = c_t - k_a * (1 - epsilon) * c * (kappa - q) + k_d * (1 - epsilon) * q - self.v_inlet * c_x + self.D_pore * c_xx
+            f_q = q_t - k_a * sigma * c * (kappa - q) + k_d * q - self.D_surface * c_xx
+        else:
+            raise ValueError("Unsupported binding model")
 
         return f_c, f_q
+
 
     def dankwerts_boundary_conditions(self, x):
         c_x_0 = torch.autograd.grad(
